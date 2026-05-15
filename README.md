@@ -8,7 +8,7 @@
 3. 연결 그래프를 기반으로 실행 순서를 자동 계산할 수 있는가
 4. 로컬 모델 환경에서도 최소한의 저장, 추적, 다국어 상호작용을 제공할 수 있는가
 
-현재 구현은 `Prompt -> Local LLM -> Validator -> Viewer` 흐름을 기본 실험 단위로 삼습니다. `Validator`는 원본 프롬프트와 생성 결과를 동시에 입력받아, 요구사항 적합성·논리적 결함·수정 필요성을 별도 모델 호출로 평가합니다.
+현재 구현은 `Prompt -> Local LLM -> Validator -> Viewer` 흐름을 기본 실험 단위로 삼습니다. `Validator`는 원본 프롬프트와 생성 결과를 동시에 입력받아, 요구사항 적합성·논리적 결함·수정 필요성을 별도 모델 호출로 평가합니다. 검증이 `FAIL`이면 수정 지시를 다시 생성 모델에 전달하고, 제한된 횟수 안에서 재생성·재검증을 반복한 뒤 `PASS`한 최종 답변만 `Viewer`로 전달합니다.
 
 ---
 
@@ -21,6 +21,7 @@
 - **그래프 기반 실행 모델**: DAG(Directed Acyclic Graph)를 기반으로 실행 순서를 계산
 - **출력 지향 실행 범위 축소**: 최종 출력 노드에서 역방향으로 도달 가능한 노드만 실행
 - **이중 입력 검증 노드**: 원본 지시와 생성 결과를 분리 입력해 평가
+- **검증 기반 재작성 루프**: 실패 시 수정 지시를 반영해 재생성 후 재검증
 - **로컬 우선 구조**: 외부 클라우드 의존 없이 Ollama HTTP API를 통해 로컬 모델과 연동
 
 그 결과, 단일 프롬프트 중심의 실험을 더 작은 구성 요소로 분해할 수 있고, 생성과 검증을 분리하여 결과 해석의 투명성을 높일 수 있다.
@@ -46,7 +47,8 @@ flowchart LR
   A["Prompt Node"] --> B["Local LLM Node"]
   A --> C["Validator Node: original prompt input"]
   B --> C["Validator Node: candidate output input"]
-  C --> D["Viewer Node"]
+  C -- "PASS" --> D["Viewer Node"]
+  C -- "FAIL: revision guidance" --> B
 ```
 
 기본 플로우는 네 단계로 구성된다.
@@ -58,6 +60,7 @@ flowchart LR
 3. `Validator Node`
    - 원본 프롬프트와 생성 결과를 동시에 비교한다.
    - 요구 충족 여부, 누락 조건, 논리적 모순, 수정 권고를 생성한다.
+   - 실패 시 수정 지시를 생성 노드로 되돌려 재작성을 유도한다.
 4. `Viewer Node`
    - 최종적으로 관찰할 결과를 표시한다.
 
@@ -76,6 +79,7 @@ flowchart LR
 - Ollama 로컬 모델 목록 조회
 - 저장된 플로우 저장 및 불러오기
 - 실행 로그와 최종 결과 분리 출력
+- 검증 실패 시 재작성 루프와 반복 회차 로그
 - 한국어 / English / 日本語 UI
 - 검증 결과 언어도 선택 언어에 맞춰 생성
 - 포트 충돌을 피하는 Windows 실행 배치 파일
@@ -288,7 +292,41 @@ LLM이 생성한 결과를 같은 수준의 자유 형식 텍스트로만 평가
 
 ---
 
-## 5. Local LLM Integration via Ollama HTTP API
+## 5. Validation-Guided Revision Loop
+
+### Problem
+
+검증 노드가 단순 평가문만 출력하면, 사용자는 결국 수정 지시를 직접 복사해 다시 생성 노드에 넣어야 한다. 이 경우 생성-검증 분리는 되었지만 자동화된 품질 개선은 일어나지 않는다.
+
+### Implementation
+
+현재 엔진은 `Validator`가 `FAIL`을 반환하면, 검증 결과 전체를 `_revision_prompt()`에 포함해 생성 모델에 다시 전달한다. 이후 새 후보를 재검증한다. 이 루프는 최대 3회까지 반복된다.
+
+```python
+for attempt in range(1, max_attempts + 1):
+    latest_validation = generate(...)
+    latest_verdict = _parse_verdict(latest_validation)
+
+    if latest_verdict == "PASS":
+        return current_candidate, latest_validation, latest_verdict
+
+    if attempt < max_attempts:
+        current_candidate = generate(
+            prompt=_revision_prompt(source_prompt, current_candidate, latest_validation),
+            ...
+        )
+```
+
+### Why This Matters
+
+- 사용자가 수동으로 수정 지시를 복사하지 않아도 됨
+- 검증 결과가 실제 품질 개선 행동으로 이어짐
+- 최종 출력에는 검증 문구가 아니라 통과한 답변만 남음
+- 실행 로그에는 각 시도 회차와 판정이 남아 실험 추적이 가능
+
+---
+
+## 6. Local LLM Integration via Ollama HTTP API
 
 ### Problem
 
@@ -309,7 +347,7 @@ LLM이 생성한 결과를 같은 수준의 자유 형식 텍스트로만 평가
 
 ---
 
-## 6. UI Localization Strategy
+## 7. UI Localization Strategy
 
 ### Problem
 
@@ -415,7 +453,7 @@ const translations = {
 
 ## 5. Evaluation Quality
 
-원본 프롬프트와 후보 응답을 분리 입력하는 Validator 구조는, 사용자가 결과를 읽기 전에 먼저 요구 충족성과 논리 일관성을 확인하게 만든다. 이는 “그럴듯한 문장”과 “지시를 실제로 만족한 답변”을 구분하는 데 도움이 된다.
+원본 프롬프트와 후보 응답을 분리 입력하는 Validator 구조는, 사용자가 결과를 읽기 전에 먼저 요구 충족성과 논리 일관성을 확인하게 만든다. 또한 실패 시 재작성 루프를 자동으로 수행하므로, “그럴듯한 문장”을 그대로 보여 주는 대신 검증을 통과한 결과를 최종 산출물로 삼을 수 있다.
 
 ## 6. Research Communication
 

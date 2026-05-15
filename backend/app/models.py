@@ -42,9 +42,12 @@ class RunStep(BaseModel):
     status: str
     output: str = ""
     error: str = ""
+    attempt: Optional[int] = None
+    verdict: Optional[str] = None
 
 
 class RunResponse(BaseModel):
     status: str
     steps: List[RunStep]
     final_output: str = ""
+    validation_output: str = ""

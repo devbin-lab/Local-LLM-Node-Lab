@@ -129,7 +129,12 @@ export default function App() {
   const [flowId, setFlowId] = useState(null);
   const [flowName, setFlowName] = useState("Research demo");
   const [language, setLanguage] = useState("en");
-  const [runState, setRunState] = useState({ status: "idle", steps: [], finalOutput: "" });
+  const [runState, setRunState] = useState({
+    status: "idle",
+    steps: [],
+    finalOutput: "",
+    validationOutput: "",
+  });
   const [message, setMessage] = useState("");
 
   const selectedNode = useMemo(
@@ -239,7 +244,7 @@ export default function App() {
     setFlowId(null);
     setFlowName("Research demo");
     setSelectedNodeId("prompt-1");
-    setRunState({ status: "idle", steps: [], finalOutput: "" });
+    setRunState({ status: "idle", steps: [], finalOutput: "", validationOutput: "" });
     setMessage(t.flowRestored);
   };
 
@@ -264,12 +269,12 @@ export default function App() {
     setNodes(saved.nodes);
     setEdges(saved.edges);
     setSelectedNodeId(saved.nodes[0]?.id ?? null);
-    setRunState({ status: "idle", steps: [], finalOutput: "" });
+    setRunState({ status: "idle", steps: [], finalOutput: "", validationOutput: "" });
     setMessage(t.flowLoaded);
   };
 
   const runFlow = async () => {
-    setRunState({ status: "running", steps: [], finalOutput: "" });
+    setRunState({ status: "running", steps: [], finalOutput: "", validationOutput: "" });
     setMessage("");
 
     try {
@@ -281,9 +286,10 @@ export default function App() {
         status: result.status,
         steps: result.steps,
         finalOutput: result.final_output,
+        validationOutput: result.validation_output,
       });
     } catch (error) {
-      setRunState({ status: "error", steps: [], finalOutput: "" });
+      setRunState({ status: "error", steps: [], finalOutput: "", validationOutput: "" });
       setMessage(error.message);
     }
   };
@@ -421,7 +427,11 @@ export default function App() {
           {runState.steps.map((step) => (
             <article key={step.node_id} className={`step ${step.status}`}>
               <strong>{step.label}</strong>
-              <span>{step.node_type}</span>
+              <span>
+                {step.node_type}
+                {step.attempt ? ` · #${step.attempt}` : ""}
+                {step.verdict ? ` · ${step.verdict}` : ""}
+              </span>
               {step.error ? <p>{step.error}</p> : <p>{step.output || t.noOutput}</p>}
             </article>
           ))}
